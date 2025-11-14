@@ -1,0 +1,125 @@
+# config.yaml
+# Configuration for the CVD monitor script
+# Symbols to monitor (moved general settings to settings.yaml)
+symbols:
+  spot:
+    - BTC/USDT
+    - ETH/USDT
+    - BNB/USDT
+    - SOL/USDT
+    - AVAX/USDT
+    - BEAMX/USDT
+  futures:
+    # 主流币种 (Top Market Cap)
+    - BTC/USDT:USDT
+    - ETH/USDT:USDT
+    - BNB/USDT:USDT
+    - SOL/USDT:USDT
+    - AVAX/USDT:USDT
+    - XRP/USDT:USDT
+    - ADA/USDT:USDT
+    - DOT/USDT:USDT
+    - DOGE/USDT:USDT
+    - TRX/USDT:USDT
+    # Layer1/Layer2 (区块链基础设施)
+    - MATIC/USDT:USDT
+    - NEAR/USDT:USDT
+    - FTM/USDT:USDT
+    - ARB/USDT:USDT
+    - OP/USDT:USDT
+    - ATOM/USDT:USDT
+    - ALGO/USDT:USDT
+    - ONE/USDT:USDT
+    - ROSE/USDT:USDT
+    - CELO/USDT:USDT
+    # DeFi (去中心化金融)
+    - UNI/USDT:USDT
+    - AAVE/USDT:USDT
+    - SNX/USDT:USDT
+    - SUSHI/USDT:USDT
+    - COMP/USDT:USDT
+    - CRV/USDT:USDT
+    - YFI/USDT:USDT
+    - MKR/USDT:USDT
+    - BAL/USDT:USDT
+    - CAKE/USDT:USDT
+    # DEX (去中心化交易所)
+    - DYDX/USDT:USDT
+    - GMX/USDT:USDT
+    - RUNE/USDT:USDT
+    - LDO/USDT:USDT
+    - PENDLE/USDT:USDT
+    - JOE/USDT:USDT
+    - VELO/USDT:USDT
+    - PERP/USDT:USDT
+    - ZKS/USDT:USDT
+    - QUICK/USDT:USDT
+    # GameFi (游戏金融)
+    - AXS/USDT:USDT
+    - SAND/USDT:USDT
+    - GALA/USDT:USDT
+    - IMX/USDT:USDT
+    - MANA/USDT:USDT
+    - ENJ/USDT:USDT
+    - ILV/USDT:USDT
+    - MAGIC/USDT:USDT
+    - SUPER/USDT:USDT
+    - ALICE/USDT:USDT
+    # AI & 大数据
+    - FET/USDT:USDT
+    - OCEAN/USDT:USDT
+    - AGIX/USDT:USDT
+    - NMR/USDT:USDT
+    - RLC/USDT:USDT
+    - RNDR/USDT:USDT
+    - ALI/USDT:USDT
+    - RAD/USDT:USDT
+    - CYBER/USDT:USDT
+    - GFT/USDT:USDT
+    # 基础设施 & Oracle
+    - LINK/USDT:USDT
+    - GRT/USDT:USDT
+    - API3/USDT:USDT
+    - BAND/USDT:USDT
+    - RIF/USDT:USDT
+    - MLN/USDT:USDT
+    - KP3R/USDT:USDT
+    - REEF/USDT:USDT
+    - ANKR/USDT:USDT
+    - CELR/USDT:USDT
+    # 新兴赛道 & 模块化
+    - SUI/USDT:USDT
+    - SEI/USDT:USDT
+    - BEAMX/USDT:USDT
+    - INJ/USDT:USDT
+    - BLUR/USDT:USDT
+    - STX/USDT:USDT
+    - CFX/USDT:USDT
+    - WLD/USDT:USDT
+    - ACH/USDT:USDT
+    - MASK/USDT:USDT
+    # 存储 & 计算
+    - FIL/USDT:USDT
+    - AR/USDT:USDT
+    - STORJ/USDT:USDT
+    - ARPA/USDT:USDT
+    - THETA/USDT:USDT
+    - HNT/USDT:USDT
+    - GLM/USDT:USDT
+    - SC/USDT:USDT
+    - AUDIO/USDT:USDT
+    - CTXC/USDT:USDT
+    # 跨链 & 互操作
+    - ATOM/USDT:USDT
+    - ICX/USDT:USDT
+    - RUNE/USDT:USDT
+    - KAVA/USDT:USDT
+    - CKB/USDT:USDT
+    - REN/USDT:USDT
+    - MULTI/USDT:USDT
+    - MOVR/USDT:USDT
+    - GLMR/USDT:USDT
+    # 五哥精选
+    - PYTH/USDT:USDT
+    - MKR/USDT:USDT
+    - JOE/USDT:USDT

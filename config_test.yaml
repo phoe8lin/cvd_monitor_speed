@@ -1,0 +1,9 @@
+# config_test.yaml
+# 测试配置文件 - 只监控少量交易对进行测试
+symbols:
+  spot:
+    - BTC/USDT
+    - ETH/USDT
+  futures:
+    - BTC/USDT:USDT
+    - ETH/USDT:USDT

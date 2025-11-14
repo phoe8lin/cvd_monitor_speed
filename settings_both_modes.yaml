@@ -1,0 +1,14 @@
+proxy:
+  host: ""  # 空字符串表示不使用代理
+  port: 0
+  type: "http"
+
+data_saving:
+  interval_minutes: 1  # 1分钟保存一次
+  save_both_modes: true  # 同时使用单文件和多文件模式
+
+cvd_reset:
+  max_age_days: 1
+
+config_reload:
+  check_interval_seconds: 60

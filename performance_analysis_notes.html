@@ -1,0 +1,647 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en"><head>
+
+<meta charset="utf-8">
+<meta name="generator" content="quarto-1.8.21">
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+
+
+<title>performance_analysis_notes</title>
+<style>
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+ul.task-list{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+  width: 0.8em;
+  margin: 0 0.8em 0.2em -1em; /* quarto-specific, see https://github.com/quarto-dev/quarto-cli/issues/4556 */ 
+  vertical-align: middle;
+}
+</style>
+
+
+<script src="performance_analysis_notes_files/libs/clipboard/clipboard.min.js"></script>
+<script src="performance_analysis_notes_files/libs/quarto-html/quarto.js" type="module"></script>
+<script src="performance_analysis_notes_files/libs/quarto-html/tabsets/tabsets.js" type="module"></script>
+<script src="performance_analysis_notes_files/libs/quarto-html/axe/axe-check.js" type="module"></script>
+<script src="performance_analysis_notes_files/libs/quarto-html/popper.min.js"></script>
+<script src="performance_analysis_notes_files/libs/quarto-html/tippy.umd.min.js"></script>
+<script src="performance_analysis_notes_files/libs/quarto-html/anchor.min.js"></script>
+<link href="performance_analysis_notes_files/libs/quarto-html/tippy.css" rel="stylesheet">
+<link href="performance_analysis_notes_files/libs/quarto-html/quarto-syntax-highlighting-ea1d7ac60288e0f1efdbc993fd8432ae.css" rel="stylesheet" id="quarto-text-highlighting-styles">
+<script src="performance_analysis_notes_files/libs/bootstrap/bootstrap.min.js"></script>
+<link href="performance_analysis_notes_files/libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
+<link href="performance_analysis_notes_files/libs/bootstrap/bootstrap-d6a003b94517c951b2d65075d42fb01b.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
+
+
+</head>
+
+<body class="fullcontent quarto-light">
+
+<div id="quarto-content" class="page-columns page-rows-contents page-layout-article">
+
+<main class="content" id="quarto-document-content">
+
+
+
+
+<section id="cvd监控程序性能分析笔记" class="level1">
+<h1>CVD监控程序性能分析笔记</h1>
+<section id="程序概述" class="level2">
+<h2 class="anchored" data-anchor-id="程序概述">程序概述</h2>
+<ul>
+<li><strong>功能</strong>: 实时监控币安(Binance)多个交易对的CVD(累积成交量差)数据</li>
+<li><strong>架构</strong>: 多线程 + 异步IO (aiohttp + asyncio)</li>
+<li><strong>监控规模</strong>: 约120个交易对 (6个现货 + 114个期货)</li>
+<li><strong>数据保存</strong>: 每分钟保存一次CSV文件</li>
+<li><strong>配置重载</strong>: 每60秒检查一次配置文件变化</li>
+</ul>
+</section>
+<section id="性能瓶颈识别" class="level2">
+<h2 class="anchored" data-anchor-id="性能瓶颈识别">性能瓶颈识别</h2>
+<section id="锁竞争问题-严重" class="level3">
+<h3 class="anchored" data-anchor-id="锁竞争问题-严重">1. 锁竞争问题 (严重)</h3>
+<p><strong>位置</strong>: - <code>all_symbol_data_lock</code> 全局锁 - 每次交易数据处理都需要获取锁 (第533-543行)</p>
+<p><strong>问题</strong>: - 120个监控器共享一个全局锁 - 每笔交易都需要更新共享字典 (calculate_cvd函数) - 高频交易场景下锁竞争激烈 - 可能导致数据更新延迟和CPU浪费在锁等待上</p>
+<p><strong>影响</strong>: - 交易频繁时,大量线程阻塞等待锁 - 降低整体吞吐量</p>
+</section>
+<section id="文件io性能问题-中等" class="level3">
+<h3 class="anchored" data-anchor-id="文件io性能问题-中等">2. 文件I/O性能问题 (中等)</h3>
+<p><strong>位置</strong>: - <code>save_cvd_data</code> 函数 (第325-408行) - 每个符号单独打开/关闭文件 (第384-388行)</p>
+<p><strong>问题</strong>: - 每分钟保存120个CSV文件 - 每个文件独立打开、写入、关闭 - 频繁的文件系统调用 - 没有使用缓冲写入</p>
+<p><strong>影响</strong>: - 磁盘I/O成为瓶颈 - 保存操作可能耗时较长</p>
+</section>
+<section id="配置文件重复读取-轻微" class="level3">
+<h3 class="anchored" data-anchor-id="配置文件重复读取-轻微">3. 配置文件重复读取 (轻微)</h3>
+<p><strong>位置</strong>: - <code>check_and_reload_symbols</code> 函数 (第239-322行) - 每60秒检查一次文件修改时间</p>
+<p><strong>问题</strong>: - 即使文件未修改,也会调用 <code>os.path.getmtime()</code> - 配置变更是低频事件,但检查是高频操作</p>
+</section>
+<section id="json解析器重复创建-轻微" class="level3">
+<h3 class="anchored" data-anchor-id="json解析器重复创建-轻微">4. JSON解析器重复创建 (轻微)</h3>
+<p><strong>位置</strong>: - 每个监控器实例创建独立的 <code>cysimdjson.JSONParser()</code> (第460行)</p>
+<p><strong>问题</strong>: - 120个监控器 = 120个JSON解析器实例 - 虽然cysimdjson很快,但仍有内存开销</p>
+</section>
+<section id="日志刷新性能问题-轻微" class="level3">
+<h3 class="anchored" data-anchor-id="日志刷新性能问题-轻微">5. 日志刷新性能问题 (轻微)</h3>
+<p><strong>位置</strong>: - <code>save_cvd_data</code> 函数结束时强制刷新所有日志处理器 (第407-408行)</p>
+<p><strong>问题</strong>: - 每分钟强制刷新所有日志处理器 - 可能导致不必要的I/O操作</p>
+</section>
+<section id="线程数量过多-中等" class="level3">
+<h3 class="anchored" data-anchor-id="线程数量过多-中等">6. 线程数量过多 (中等)</h3>
+<p><strong>架构问题</strong>: - 每个符号一个线程 (120个监控线程) - 每个线程运行独立的asyncio事件循环 - 额外的数据保存线程和配置重载线程</p>
+<p><strong>问题</strong>: - 线程上下文切换开销 - 每个线程独立的事件循环效率低 - 内存占用较高</p>
+</section>
+<section id="csv文件读取优化不足-轻微" class="level3">
+<h3 class="anchored" data-anchor-id="csv文件读取优化不足-轻微">7. CSV文件读取优化不足 (轻微)</h3>
+<p><strong>位置</strong>: - <code>load_last_cvd_from_csv</code> 函数 (第165-228行)</p>
+<p><strong>问题</strong>: - 虽然已优化为只读取文件末尾4KB - 但对于非常大的文件,仍需要seek操作 - 可以考虑维护索引或使用数据库</p>
+</section>
+<section id="缺少连接池-中等" class="level3">
+<h3 class="anchored" data-anchor-id="缺少连接池-中等">8. 缺少连接池 (中等)</h3>
+<p><strong>位置</strong>: - <code>connect_websocket</code> 函数 (第595-650行) - 每次连接创建新的 <code>aiohttp.ClientSession</code> (第614行)</p>
+<p><strong>问题</strong>: - 每次WebSocket重连都创建新的session - 没有复用TCP连接 - 增加连接建立开销</p>
+</section>
+<section id="数据保存等待机制低效-轻微" class="level3">
+<h3 class="anchored" data-anchor-id="数据保存等待机制低效-轻微">9. 数据保存等待机制低效 (轻微)</h3>
+<p><strong>位置</strong>: - <code>data_saver_thread_func</code> 函数 (第418-421行)</p>
+<p><strong>问题</strong>: - 使用循环sleep(5)来实现可中断等待 - 可以使用Event.wait(timeout)更高效</p>
+</section>
+<section id="缺少批量操作-中等" class="level3">
+<h3 class="anchored" data-anchor-id="缺少批量操作-中等">10. 缺少批量操作 (中等)</h3>
+<p><strong>整体架构</strong>: - 每笔交易独立处理 - 每个符号独立保存</p>
+<p><strong>优化空间</strong>: - 可以批量处理交易数据 - 可以批量写入CSV文件</p>
+</section>
+</section>
+<section id="性能优化建议优先级" class="level2">
+<h2 class="anchored" data-anchor-id="性能优化建议优先级">性能优化建议优先级</h2>
+<section id="高优先级" class="level3">
+<h3 class="anchored" data-anchor-id="高优先级">高优先级</h3>
+<ol type="1">
+<li><strong>优化锁机制</strong> - 最大影响</li>
+<li><strong>减少线程数量,使用单一事件循环</strong> - 架构优化</li>
+<li><strong>优化文件I/O</strong> - 显著提升保存性能</li>
+</ol>
+</section>
+<section id="中优先级" class="level3">
+<h3 class="anchored" data-anchor-id="中优先级">中优先级</h3>
+<ol start="4" type="1">
+<li><strong>使用连接池</strong> - 提升稳定性和性能</li>
+<li><strong>批量操作</strong> - 提升整体效率</li>
+</ol>
+</section>
+<section id="低优先级" class="level3">
+<h3 class="anchored" data-anchor-id="低优先级">低优先级</h3>
+<ol start="6" type="1">
+<li><strong>优化配置检查</strong> - 边际改进</li>
+<li><strong>优化日志刷新</strong> - 边际改进</li>
+<li><strong>共享JSON解析器</strong> - 边际改进</li>
+</ol>
+</section>
+</section>
+<section id="具体优化方案" class="level2">
+<h2 class="anchored" data-anchor-id="具体优化方案">具体优化方案</h2>
+<section id="方案1-使用无锁数据结构或分段锁" class="level3">
+<h3 class="anchored" data-anchor-id="方案1-使用无锁数据结构或分段锁">方案1: 使用无锁数据结构或分段锁</h3>
+<ul>
+<li>为每个监控器使用独立的数据存储</li>
+<li>或使用读写锁(RWLock)</li>
+<li>或使用原子操作</li>
+</ul>
+</section>
+<section id="方案2-统一事件循环" class="level3">
+<h3 class="anchored" data-anchor-id="方案2-统一事件循环">方案2: 统一事件循环</h3>
+<ul>
+<li>所有WebSocket连接在同一个asyncio事件循环中运行</li>
+<li>减少到3-4个线程 (主线程 + 1个asyncio线程 + 保存线程 + 配置线程)</li>
+</ul>
+</section>
+<section id="方案3-批量文件写入" class="level3">
+<h3 class="anchored" data-anchor-id="方案3-批量文件写入">方案3: 批量文件写入</h3>
+<ul>
+<li>使用buffered writer</li>
+<li>或定期批量flush</li>
+<li>或使用数据库替代CSV</li>
+</ul>
+</section>
+<section id="方案4-使用aiohttp连接池" class="level3">
+<h3 class="anchored" data-anchor-id="方案4-使用aiohttp连接池">方案4: 使用aiohttp连接池</h3>
+<ul>
+<li>在监控器初始化时创建session</li>
+<li>复用session进行WebSocket连接</li>
+</ul>
+</section>
+<section id="方案5-使用异步文件io" class="level3">
+<h3 class="anchored" data-anchor-id="方案5-使用异步文件io">方案5: 使用异步文件I/O</h3>
+<ul>
+<li>使用aiofiles库</li>
+<li>在asyncio事件循环中异步写入文件</li>
+</ul>
+</section>
+<section id="方案6-数据库替代csv" class="level3">
+<h3 class="anchored" data-anchor-id="方案6-数据库替代csv">方案6: 数据库替代CSV</h3>
+<ul>
+<li>使用SQLite或其他轻量级数据库</li>
+<li>批量插入,减少I/O次数</li>
+<li>更好的查询性能</li>
+</ul>
+</section>
+<section id="方案7-内存映射文件" class="level3">
+<h3 class="anchored" data-anchor-id="方案7-内存映射文件">方案7: 内存映射文件</h3>
+<ul>
+<li>对于频繁写入的场景,使用mmap</li>
+<li>减少系统调用次数</li>
+</ul>
+</section>
+<section id="方案8-使用队列解耦" class="level3">
+<h3 class="anchored" data-anchor-id="方案8-使用队列解耦">方案8: 使用队列解耦</h3>
+<ul>
+<li>交易数据处理和文件保存解耦</li>
+<li>使用asyncio.Queue或multiprocessing.Queue</li>
+<li>批量消费队列数据</li>
+</ul>
+</section>
+</section>
+<section id="预期性能提升" class="level2">
+<h2 class="anchored" data-anchor-id="预期性能提升">预期性能提升</h2>
+<section id="优化锁机制" class="level3">
+<h3 class="anchored" data-anchor-id="优化锁机制">优化锁机制</h3>
+<ul>
+<li>CPU利用率: 提升30-50%</li>
+<li>延迟: 降低50-70%</li>
+</ul>
+</section>
+<section id="统一事件循环" class="level3">
+<h3 class="anchored" data-anchor-id="统一事件循环">统一事件循环</h3>
+<ul>
+<li>内存占用: 降低60-80%</li>
+<li>上下文切换: 降低90%</li>
+</ul>
+</section>
+<section id="批量文件io" class="level3">
+<h3 class="anchored" data-anchor-id="批量文件io">批量文件I/O</h3>
+<ul>
+<li>保存时间: 降低70-90%</li>
+<li>磁盘I/O: 降低80-90%</li>
+</ul>
+</section>
+<section id="整体优化后" class="level3">
+<h3 class="anchored" data-anchor-id="整体优化后">整体优化后</h3>
+<ul>
+<li>可支持更多交易对 (300+)</li>
+<li>延迟降低到毫秒级</li>
+<li>资源占用显著降低</li>
+</ul>
+</section>
+</section>
+</section>
+
+</main>
+<!-- /main column -->
+<script id="quarto-html-after-body" type="application/javascript">
+  window.document.addEventListener("DOMContentLoaded", function (event) {
+    const icon = "";
+    const anchorJS = new window.AnchorJS();
+    anchorJS.options = {
+      placement: 'right',
+      icon: icon
+    };
+    anchorJS.add('.anchored');
+    const isCodeAnnotation = (el) => {
+      for (const clz of el.classList) {
+        if (clz.startsWith('code-annotation-')) {                     
+          return true;
+        }
+      }
+      return false;
+    }
+    const onCopySuccess = function(e) {
+      // button target
+      const button = e.trigger;
+      // don't keep focus
+      button.blur();
+      // flash "checked"
+      button.classList.add('code-copy-button-checked');
+      var currentTitle = button.getAttribute("title");
+      button.setAttribute("title", "Copied!");
+      let tooltip;
+      if (window.bootstrap) {
+        button.setAttribute("data-bs-toggle", "tooltip");
+        button.setAttribute("data-bs-placement", "left");
+        button.setAttribute("data-bs-title", "Copied!");
+        tooltip = new bootstrap.Tooltip(button, 
+          { trigger: "manual", 
+            customClass: "code-copy-button-tooltip",
+            offset: [0, -8]});
+        tooltip.show();    
+      }
+      setTimeout(function() {
+        if (tooltip) {
+          tooltip.hide();
+          button.removeAttribute("data-bs-title");
+          button.removeAttribute("data-bs-toggle");
+          button.removeAttribute("data-bs-placement");
+        }
+        button.setAttribute("title", currentTitle);
+        button.classList.remove('code-copy-button-checked');
+      }, 1000);
+      // clear code selection
+      e.clearSelection();
+    }
+    const getTextToCopy = function(trigger) {
+        const codeEl = trigger.previousElementSibling.cloneNode(true);
+        for (const childEl of codeEl.children) {
+          if (isCodeAnnotation(childEl)) {
+            childEl.remove();
+          }
+        }
+        return codeEl.innerText;
+    }
+    const clipboard = new window.ClipboardJS('.code-copy-button:not([data-in-quarto-modal])', {
+      text: getTextToCopy
+    });
+    clipboard.on('success', onCopySuccess);
+    if (window.document.getElementById('quarto-embedded-source-code-modal')) {
+      const clipboardModal = new window.ClipboardJS('.code-copy-button[data-in-quarto-modal]', {
+        text: getTextToCopy,
+        container: window.document.getElementById('quarto-embedded-source-code-modal')
+      });
+      clipboardModal.on('success', onCopySuccess);
+    }
+      var localhostRegex = new RegExp(/^(?:http|https):\/\/localhost\:?[0-9]*\//);
+      var mailtoRegex = new RegExp(/^mailto:/);
+        var filterRegex = new RegExp('/' + window.location.host + '/');
+      var isInternal = (href) => {
+          return filterRegex.test(href) || localhostRegex.test(href) || mailtoRegex.test(href);
+      }
+      // Inspect non-navigation links and adorn them if external
+     var links = window.document.querySelectorAll('a[href]:not(.nav-link):not(.navbar-brand):not(.toc-action):not(.sidebar-link):not(.sidebar-item-toggle):not(.pagination-link):not(.no-external):not([aria-hidden]):not(.dropdown-item):not(.quarto-navigation-tool):not(.about-link)');
+      for (var i=0; i<links.length; i++) {
+        const link = links[i];
+        if (!isInternal(link.href)) {
+          // undo the damage that might have been done by quarto-nav.js in the case of
+          // links that we want to consider external
+          if (link.dataset.originalHref !== undefined) {
+            link.href = link.dataset.originalHref;
+          }
+        }
+      }
+    function tippyHover(el, contentFn, onTriggerFn, onUntriggerFn) {
+      const config = {
+        allowHTML: true,
+        maxWidth: 500,
+        delay: 100,
+        arrow: false,
+        appendTo: function(el) {
+            return el.parentElement;
+        },
+        interactive: true,
+        interactiveBorder: 10,
+        theme: 'quarto',
+        placement: 'bottom-start',
+      };
+      if (contentFn) {
+        config.content = contentFn;
+      }
+      if (onTriggerFn) {
+        config.onTrigger = onTriggerFn;
+      }
+      if (onUntriggerFn) {
+        config.onUntrigger = onUntriggerFn;
+      }
+      window.tippy(el, config); 
+    }
+    const noterefs = window.document.querySelectorAll('a[role="doc-noteref"]');
+    for (var i=0; i<noterefs.length; i++) {
+      const ref = noterefs[i];
+      tippyHover(ref, function() {
+        // use id or data attribute instead here
+        let href = ref.getAttribute('data-footnote-href') || ref.getAttribute('href');
+        try { href = new URL(href).hash; } catch {}
+        const id = href.replace(/^#\/?/, "");
+        const note = window.document.getElementById(id);
+        if (note) {
+          return note.innerHTML;
+        } else {
+          return "";
+        }
+      });
+    }
+    const xrefs = window.document.querySelectorAll('a.quarto-xref');
+    const processXRef = (id, note) => {
+      // Strip column container classes
+      const stripColumnClz = (el) => {
+        el.classList.remove("page-full", "page-columns");
+        if (el.children) {
+          for (const child of el.children) {
+            stripColumnClz(child);
+          }
+        }
+      }
+      stripColumnClz(note)
+      if (id === null || id.startsWith('sec-')) {
+        // Special case sections, only their first couple elements
+        const container = document.createElement("div");
+        if (note.children && note.children.length > 2) {
+          container.appendChild(note.children[0].cloneNode(true));
+          for (let i = 1; i < note.children.length; i++) {
+            const child = note.children[i];
+            if (child.tagName === "P" && child.innerText === "") {
+              continue;
+            } else {
+              container.appendChild(child.cloneNode(true));
+              break;
+            }
+          }
+          if (window.Quarto?.typesetMath) {
+            window.Quarto.typesetMath(container);
+          }
+          return container.innerHTML
+        } else {
+          if (window.Quarto?.typesetMath) {
+            window.Quarto.typesetMath(note);
+          }
+          return note.innerHTML;
+        }
+      } else {
+        // Remove any anchor links if they are present
+        const anchorLink = note.querySelector('a.anchorjs-link');
+        if (anchorLink) {
+          anchorLink.remove();
+        }
+        if (window.Quarto?.typesetMath) {
+          window.Quarto.typesetMath(note);
+        }
+        if (note.classList.contains("callout")) {
+          return note.outerHTML;
+        } else {
+          return note.innerHTML;
+        }
+      }
+    }
+    for (var i=0; i<xrefs.length; i++) {
+      const xref = xrefs[i];
+      tippyHover(xref, undefined, function(instance) {
+        instance.disable();
+        let url = xref.getAttribute('href');
+        let hash = undefined; 
+        if (url.startsWith('#')) {
+          hash = url;
+        } else {
+          try { hash = new URL(url).hash; } catch {}
+        }
+        if (hash) {
+          const id = hash.replace(/^#\/?/, "");
+          const note = window.document.getElementById(id);
+          if (note !== null) {
+            try {
+              const html = processXRef(id, note.cloneNode(true));
+              instance.setContent(html);
+            } finally {
+              instance.enable();
+              instance.show();
+            }
+          } else {
+            // See if we can fetch this
+            fetch(url.split('#')[0])
+            .then(res => res.text())
+            .then(html => {
+              const parser = new DOMParser();
+              const htmlDoc = parser.parseFromString(html, "text/html");
+              const note = htmlDoc.getElementById(id);
+              if (note !== null) {
+                const html = processXRef(id, note);
+                instance.setContent(html);
+              } 
+            }).finally(() => {
+              instance.enable();
+              instance.show();
+            });
+          }
+        } else {
+          // See if we can fetch a full url (with no hash to target)
+          // This is a special case and we should probably do some content thinning / targeting
+          fetch(url)
+          .then(res => res.text())
+          .then(html => {
+            const parser = new DOMParser();
+            const htmlDoc = parser.parseFromString(html, "text/html");
+            const note = htmlDoc.querySelector('main.content');
+            if (note !== null) {
+              // This should only happen for chapter cross references
+              // (since there is no id in the URL)
+              // remove the first header
+              if (note.children.length > 0 && note.children[0].tagName === "HEADER") {
+                note.children[0].remove();
+              }
+              const html = processXRef(null, note);
+              instance.setContent(html);
+            } 
+          }).finally(() => {
+            instance.enable();
+            instance.show();
+          });
+        }
+      }, function(instance) {
+      });
+    }
+        let selectedAnnoteEl;
+        const selectorForAnnotation = ( cell, annotation) => {
+          let cellAttr = 'data-code-cell="' + cell + '"';
+          let lineAttr = 'data-code-annotation="' +  annotation + '"';
+          const selector = 'span[' + cellAttr + '][' + lineAttr + ']';
+          return selector;
+        }
+        const selectCodeLines = (annoteEl) => {
+          const doc = window.document;
+          const targetCell = annoteEl.getAttribute("data-target-cell");
+          const targetAnnotation = annoteEl.getAttribute("data-target-annotation");
+          const annoteSpan = window.document.querySelector(selectorForAnnotation(targetCell, targetAnnotation));
+          const lines = annoteSpan.getAttribute("data-code-lines").split(",");
+          const lineIds = lines.map((line) => {
+            return targetCell + "-" + line;
+          })
+          let top = null;
+          let height = null;
+          let parent = null;
+          if (lineIds.length > 0) {
+              //compute the position of the single el (top and bottom and make a div)
+              const el = window.document.getElementById(lineIds[0]);
+              top = el.offsetTop;
+              height = el.offsetHeight;
+              parent = el.parentElement.parentElement;
+            if (lineIds.length > 1) {
+              const lastEl = window.document.getElementById(lineIds[lineIds.length - 1]);
+              const bottom = lastEl.offsetTop + lastEl.offsetHeight;
+              height = bottom - top;
+            }
+            if (top !== null && height !== null && parent !== null) {
+              // cook up a div (if necessary) and position it 
+              let div = window.document.getElementById("code-annotation-line-highlight");
+              if (div === null) {
+                div = window.document.createElement("div");
+                div.setAttribute("id", "code-annotation-line-highlight");
+                div.style.position = 'absolute';
+                parent.appendChild(div);
+              }
+              div.style.top = top - 2 + "px";
+              div.style.height = height + 4 + "px";
+              div.style.left = 0;
+              let gutterDiv = window.document.getElementById("code-annotation-line-highlight-gutter");
+              if (gutterDiv === null) {
+                gutterDiv = window.document.createElement("div");
+                gutterDiv.setAttribute("id", "code-annotation-line-highlight-gutter");
+                gutterDiv.style.position = 'absolute';
+                const codeCell = window.document.getElementById(targetCell);
+                const gutter = codeCell.querySelector('.code-annotation-gutter');
+                gutter.appendChild(gutterDiv);
+              }
+              gutterDiv.style.top = top - 2 + "px";
+              gutterDiv.style.height = height + 4 + "px";
+            }
+            selectedAnnoteEl = annoteEl;
+          }
+        };
+        const unselectCodeLines = () => {
+          const elementsIds = ["code-annotation-line-highlight", "code-annotation-line-highlight-gutter"];
+          elementsIds.forEach((elId) => {
+            const div = window.document.getElementById(elId);
+            if (div) {
+              div.remove();
+            }
+          });
+          selectedAnnoteEl = undefined;
+        };
+          // Handle positioning of the toggle
+      window.addEventListener(
+        "resize",
+        throttle(() => {
+          elRect = undefined;
+          if (selectedAnnoteEl) {
+            selectCodeLines(selectedAnnoteEl);
+          }
+        }, 10)
+      );
+      function throttle(fn, ms) {
+      let throttle = false;
+      let timer;
+        return (...args) => {
+          if(!throttle) { // first call gets through
+              fn.apply(this, args);
+              throttle = true;
+          } else { // all the others get throttled
+              if(timer) clearTimeout(timer); // cancel #2
+              timer = setTimeout(() => {
+                fn.apply(this, args);
+                timer = throttle = false;
+              }, ms);
+          }
+        };
+      }
+        // Attach click handler to the DT
+        const annoteDls = window.document.querySelectorAll('dt[data-target-cell]');
+        for (const annoteDlNode of annoteDls) {
+          annoteDlNode.addEventListener('click', (event) => {
+            const clickedEl = event.target;
+            if (clickedEl !== selectedAnnoteEl) {
+              unselectCodeLines();
+              const activeEl = window.document.querySelector('dt[data-target-cell].code-annotation-active');
+              if (activeEl) {
+                activeEl.classList.remove('code-annotation-active');
+              }
+              selectCodeLines(clickedEl);
+              clickedEl.classList.add('code-annotation-active');
+            } else {
+              // Unselect the line
+              unselectCodeLines();
+              clickedEl.classList.remove('code-annotation-active');
+            }
+          });
+        }
+    const findCites = (el) => {
+      const parentEl = el.parentElement;
+      if (parentEl) {
+        const cites = parentEl.dataset.cites;
+        if (cites) {
+          return {
+            el,
+            cites: cites.split(' ')
+          };
+        } else {
+          return findCites(el.parentElement)
+        }
+      } else {
+        return undefined;
+      }
+    };
+    var bibliorefs = window.document.querySelectorAll('a[role="doc-biblioref"]');
+    for (var i=0; i<bibliorefs.length; i++) {
+      const ref = bibliorefs[i];
+      const citeInfo = findCites(ref);
+      if (citeInfo) {
+        tippyHover(citeInfo.el, function() {
+          var popup = window.document.createElement('div');
+          citeInfo.cites.forEach(function(cite) {
+            var citeDiv = window.document.createElement('div');
+            citeDiv.classList.add('hanging-indent');
+            citeDiv.classList.add('csl-entry');
+            var biblioDiv = window.document.getElementById('ref-' + cite);
+            if (biblioDiv) {
+              citeDiv.innerHTML = biblioDiv.innerHTML;
+            }
+            popup.appendChild(citeDiv);
+          });
+          return popup.innerHTML;
+        });
+      }
+    }
+  });
+  </script>
+</div> <!-- /content -->
+
+
+
+
+</body></html>
