@@ -3,12 +3,32 @@
 
 """
 优化版 CVD 监控程序 V3 - 双模式同时写入
+
 主要特性:
 1. 使用单一 asyncio 事件循环,所有 WebSocket 连接作为协程并发运行
 2. 移除全局锁,使用 asyncio 的线程安全特性
 3. 支持单文件和多文件同时写入(可配置)
 4. 共享 aiohttp.ClientSession,复用连接池
 5. 高效批量写入,最小化I/O开销
+
+核心指标说明:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+指标             | 计算方式                    | 清零时机              | 清零频率
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+cvd              | 主动买入量-主动卖出量累积   | 程序启动时(条件性)    | 文件超过6天
+period_volume    | 所有交易量累加              | 每次保存数据后        | 默认1分钟
+trade_count      | 交易笔数计数                | 永不清零              | 仅程序重启
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+CVD清零条件(程序启动时检查):
+- CSV文件不存在
+- CSV文件为空
+- CSV文件太旧(超过 cvd_max_age_days,默认6天)
+- CSV文件解析失败
+
+配置参数:
+- cvd_reset.max_age_days: CVD文件最大保留天数(默认6天)
+- data_saving.interval_minutes: 数据保存间隔(默认1分钟,影响period_volume清零频率)
 """
 
 import asyncio
@@ -156,7 +176,24 @@ except Exception as e:
 def load_last_cvd_from_separate_csv(csv_file_path, max_age_days=1):
     """
     从独立的CSV文件加载最后的CVD值
-    CSV格式: timestamp,price,cvd,period_volume
+    
+    CVD清零逻辑说明:
+    程序启动时,CVD会在以下情况下从0开始计算:
+    1. CSV文件不存在
+    2. CSV文件为空(大小为0或只有表头)
+    3. CSV文件太旧(文件修改时间超过 max_age_days 天,默认6天)
+    4. CSV文件解析失败(格式错误或数据损坏)
+    
+    如果以上条件都不满足,则从CSV文件的最后一行加载CVD值,继续累积计算
+    
+    参数:
+        csv_file_path: CSV文件路径
+        max_age_days: CVD数据最大保留天数(默认1天,实际使用时为6天)
+    
+    返回:
+        float: 最后的CVD值,如果需要重置则返回0.0
+    
+    CSV格式: timestamp,price,cvd,period_volume,trade_count
     """
     if not os.path.exists(csv_file_path):
         return 0.0
@@ -274,6 +311,23 @@ class SymbolCvdMonitor:
     def calculate_cvd(self, trade_data):
         """
         计算 CVD (Cumulative Volume Delta) 和周期成交量
+        
+        核心指标说明:
+        1. CVD (累积成交量差):
+           - 计算方式: 主动买入量 - 主动卖出量的累积
+           - 清零时机: 程序启动时(如果CSV文件不存在/太旧/损坏)
+           - 运行期间: 持续累积,不清零
+           
+        2. period_volume (周期交易量):
+           - 计算方式: 所有交易量的累加(不区分买卖方向)
+           - 清零时机: 每次保存数据后自动清零
+           - 清零频率: 默认1分钟(可在settings.yaml配置)
+           
+        3. trade_count (交易笔数):
+           - 计算方式: 简单计数
+           - 清零时机: 永不清零,仅程序重启时归零
+           - 用途: 统计和日志输出
+        
         注意: 在单线程asyncio环境下,无需锁保护
         """
         try:
@@ -387,7 +441,14 @@ class SymbolCvdMonitor:
         self.running = False
     
     def reset_period_volume(self):
-        """重置周期交易量"""
+        """
+        重置周期交易量
+        
+        说明:
+        - 此方法在每次保存数据后自动调用
+        - 仅清零 period_volume,不影响 cvd 和 trade_count
+        - 调用频率: 默认1分钟(由 save_interval_minutes 配置)
+        """
         self.period_volume = 0.0
         self.data_store[self.shared_key]['period_volume'] = 0.0
 
